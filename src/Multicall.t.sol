@@ -12,9 +12,9 @@ contract Store {
     function getAdd(uint256 _val) public view returns (uint256) { return val + _val; }
 }
 
-// We inherit from Multicall rather than deploy an instance because solidity
+// We inherit from Multicall2 rather than deploy an instance because solidity
 // can't return dynamically sized byte arrays from external contracts
-contract MulticallTest is DSTest, Multicall {
+contract MulticallTest is DSTest, Multicall2 {
 
     Store public storeA;
     Store public storeB;
@@ -131,7 +131,7 @@ contract MulticallTest is DSTest, Multicall {
     }
 
     function test_helpers() public {
-        bytes32 blockHash = getBlockHash(510);
+        bytes32 blockHash = getBlockHash();
         bytes32 lastBlockHash = getLastBlockHash();
         uint256 timestamp = getCurrentBlockTimestamp();
         uint256 difficulty = getCurrentBlockDifficulty();
@@ -139,7 +139,7 @@ contract MulticallTest is DSTest, Multicall {
         address coinbase = getCurrentBlockCoinbase();
         uint256 balance = getEthBalance(address(this));
 
-        assertEq(blockHash, blockhash(510));
+        assertEq(blockHash, blockhash(block.number));
         assertEq(lastBlockHash, blockhash(block.number - 1));
         assertEq(timestamp, block.timestamp);
         assertEq(difficulty, block.difficulty);
