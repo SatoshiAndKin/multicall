@@ -1,0 +1,88 @@
+name: Reviewed public Multicall Linux test
+
+on:
+  workflow_call:
+    outputs:
+      validated-sha:
+        value: ${{ jobs.test.outputs.validated-sha }}
+      validated-on:
+        value: ${{ jobs.test.outputs.validated-on }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Solidity tests natively
+    if: >-
+      ${{ github.repository == 'SatoshiAndKin/multicall' &&
+          github.repository_id == '254164795' &&
+          github.event.repository.private == false &&
+          github.event.repository.fork == true &&
+          github.actor == 'BlinkyStitt' &&
+          github.triggering_actor == 'BlinkyStitt' &&
+          github.workflow_ref == format('SatoshiAndKin/multicall/.github/workflows/foundry.yml@{0}', github.ref) &&
+          ((github.event_name == 'pull_request' &&
+            github.event.pull_request.user.id == 624221 &&
+            github.event.pull_request.head.repo.id == 254164795 &&
+            github.event.pull_request.base.repo.id == 254164795 &&
+            github.event.pull_request.base.ref == 'master' &&
+            github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number) &&
+            github.sha == vars.SKI_PUBLIC_K3S_APPROVED_PR_MERGE_SHA) ||
+           (github.event_name == 'push' &&
+            github.ref == 'refs/heads/master' &&
+            github.ref_protected &&
+            github.sha == vars.SKI_PUBLIC_K3S_APPROVED_MAIN_SHA)) }}
+    runs-on:
+      group: ski-ci-public-reviewed
+      labels: ski-gvisor-public-small
+    timeout-minutes: 10
+    outputs:
+      validated-sha: ${{ steps.receipt.outputs.sha }}
+      validated-on: ${{ steps.receipt.outputs.environment }}
+    steps:
+      - name: Require native Linux AMD64
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = self-hosted
+          test "$(uname -s)-$(uname -m)" = Linux-x86_64
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install the same checksummed Forge and Solidity compiler
+        shell: bash
+        run: |
+          umask 077
+          tools="$(mktemp -d "$RUNNER_TEMP/multicall-tools.XXXXXX")"
+          archive="$tools/foundry.tar.gz"
+          svm="$tools/home/.svm"
+          compiler="$svm/0.5.17/solc-0.5.17"
+          mkdir -p "$svm/0.5.17"
+          curl --proto '=https' --proto-redir '=https' --max-redirs 3 --retry 2 \
+            --fail --location --silent --show-error --connect-timeout 10 \
+            --max-time 90 --max-filesize 150000000 --output "$archive" \
+            https://github.com/foundry-rs/foundry/releases/download/v1.9.0/foundry_v1.9.0_linux_amd64.tar.gz
+          printf '%s  %s\n' '8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99' "$archive" |
+            sha256sum --check --status
+          tar -xzf "$archive" -C "$tools" forge
+          curl --proto '=https' --proto-redir '=https' --max-redirs 3 --retry 2 \
+            --fail --location --silent --show-error --connect-timeout 10 \
+            --max-time 45 --max-filesize 10000000 --output "$compiler" \
+            https://github.com/argotorg/solidity/releases/download/v0.5.17/solc-static-linux
+          printf '%s  %s\n' 'c35ce7a4d3ffa5747c178b1e24c8541b2e5d8a82c1db3719eb4433a1f19e16f3' "$compiler" |
+            sha256sum --check --status
+          chmod 0700 "$compiler"
+          printf '%s\n' "$tools" >> "$GITHUB_PATH"
+          printf 'MULTICALL_NATIVE_HOME=%s\n' "$tools/home" >> "$GITHUB_ENV"
+      - name: Run the original offline Solidity suite
+        shell: bash
+        run: HOME="$MULTICALL_NATIVE_HOME" FOUNDRY_OFFLINE=true forge test --use 0.5.17
+      - name: Attest the exact native suite
+        id: receipt
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RUNNER_ENVIRONMENT" = self-hosted
+          printf 'sha=%s\nenvironment=%s\n' "$GITHUB_SHA" "$RUNNER_ENVIRONMENT" >> "$GITHUB_OUTPUT"
