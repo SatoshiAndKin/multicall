@@ -14,8 +14,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Solidity tests
+  route:
+    name: Select the original hosted or reviewed native lane
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 2
+    outputs:
+      lane: ${{ steps.select.outputs.lane }}
+    steps:
+      - id: select
+        name: Select a single lane before any suite starts
+        shell: bash
+        env:
+          NATIVE: >-
+            ${{ github.repository == 'SatoshiAndKin/multicall' &&
+                github.repository_id == '254164795' &&
+                github.event.repository.private == false &&
+                github.event.repository.fork == true &&
+                github.actor == 'BlinkyStitt' &&
+                github.triggering_actor == 'BlinkyStitt' &&
+                github.workflow_ref == format('SatoshiAndKin/multicall/.github/workflows/foundry.yml@{0}', github.ref) &&
+                ((github.event_name == 'pull_request' &&
+                  github.event.pull_request.user.id == 624221 &&
+                  github.event.pull_request.head.repo.id == 254164795 &&
+                  github.event.pull_request.base.repo.id == 254164795 &&
+                  github.event.pull_request.base.ref == 'master' &&
+                  github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number) &&
+                  github.sha == vars.SKI_PUBLIC_K3S_APPROVED_PR_MERGE_SHA) ||
+                 (github.event_name == 'push' &&
+                  github.ref == 'refs/heads/master' &&
+                  github.ref_protected &&
+                  github.sha == vars.SKI_PUBLIC_K3S_APPROVED_MAIN_SHA)) }}
+        run: |
+          case "$NATIVE" in
+            true) lane=native ;;
+            false) lane=hosted ;;
+            *) exit 1 ;;
+          esac
+          printf 'lane=%s\n' "$lane" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: route
+    if: needs.route.outputs.lane == 'native'
+    permissions:
+      contents: read
+    uses: SatoshiAndKin/multicall/.github/workflows/foundry-reviewed-native.yml@f1dd9a4ee6527b77ecef3a2632e7ae530cf41bbf
+
+  hosted:
+    name: Original hosted Solidity suite
+    needs: route
+    if: needs.route.outputs.lane == 'hosted'
+    outputs:
+      validated-sha: ${{ steps.receipt.outputs.sha }}
+      validated-on: ${{ steps.receipt.outputs.environment }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -27,3 +78,51 @@ jobs:
         with:
           version: v1.9.0
       - run: forge test --use 0.5.17
+      - name: Attest the exact hosted suite
+        id: receipt
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          printf 'sha=%s\nenvironment=%s\n' "$GITHUB_SHA" "$RUNNER_ENVIRONMENT" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Solidity tests
+    needs: [route, native, hosted]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: Require the real suite result from the selected lane
+        shell: bash
+        env:
+          ROUTE_RESULT: ${{ needs.route.result }}
+          LANE: ${{ needs.route.outputs.lane }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          NATIVE_SHA: ${{ needs.native.outputs.validated-sha }}
+          NATIVE_ON: ${{ needs.native.outputs.validated-on }}
+          HOSTED_RESULT: ${{ needs.hosted.result }}
+          HOSTED_SHA: ${{ needs.hosted.outputs.validated-sha }}
+          HOSTED_ON: ${{ needs.hosted.outputs.validated-on }}
+        run: |
+          if [[ "$ROUTE_RESULT" == success && -n "$GITHUB_SHA" ]]; then
+            case "$LANE" in
+              native)
+                if [[ "$NATIVE_RESULT" == success && "$NATIVE_SHA" == "$GITHUB_SHA" &&
+                      "$NATIVE_ON" == self-hosted && "$HOSTED_RESULT" == skipped ]]; then
+                  echo 'Completed the exact Solidity suite on reviewed native K3s.' >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                fi
+                ;;
+              hosted)
+                if [[ "$HOSTED_RESULT" == success && "$HOSTED_SHA" == "$GITHUB_SHA" &&
+                      "$HOSTED_ON" == github-hosted && "$NATIVE_RESULT" == skipped ]]; then
+                  echo 'Completed the exact Solidity suite on the original GitHub-hosted lane (not migrated).' >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                fi
+                ;;
+            esac
+          fi
+          echo '::error::No exact successful Solidity suite from the designated lane.'
+          exit 1
